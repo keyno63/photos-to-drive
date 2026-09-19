@@ -1,74 +1,78 @@
 # photos-to-drive
 
-macOS向けGo CLI。Apple「写真」ライブラリ内に実在する原本を **1ファイルずつ一時コピー → Google Driveへ転送 → サイズとMD5を照合 → 一時コピー削除** します。
+[日本語](README.ja.md)
 
-**元の写真ライブラリ・iCloud設定・iPhoneの写真は変更しません。元のライブラリの容量を減らすツールではありません。**
+A Go CLI for macOS that processes locally available originals from an Apple Photos library one file at a time:
 
-## 対象と制約
+**create a temporary copy → upload it to Google Drive → verify its size and MD5 → remove the temporary copy**
 
-- 現行ライブラリの `originals/` 以下のローカル画像・動画を読み取ります。PhotoKitや写真アプリの「書き出す」操作を使う実装ではありません。対応する拡張子は `main.go` の `media` にあります。
-- iCloudの一覧・原本の有無を問い合わせません。ローカルにない原本は対象になりません。macOSのdatalessフラグがあるファイルは読みません。
-- 内部のファイル名（UUID等）で保存します。撮影時の埋め込みEXIFなどはバイト単位で保持しますが、写真アプリ内のアルバム・人物・お気に入り・編集・表示上の元ファイル名は取得しません。
-- Live Photosの画像と動画、RAWとJPEGはそれぞれ別ファイルです。Google Drive上でAppleのLive Photosとして再構成はしません。
-- DB上の削除状態・非表示状態を参照しないため、「最近削除した項目」などの原本が `originals/` に残っていれば対象に含まれる可能性があります。参照形式でライブラリ外に置いた原本は対象外です。
-- したがって「写真アプリ内の全写真を完全にバックアップした」ことを保証するものではありません。これだけを根拠にライブラリ全体を削除しないでください。
-- `originals/` がない古いライブラリは明示的にエラーとします。処理中は「写真」アプリを終了し、ライブラリの整理や移動を避けてください。
+The tool does not modify the source Photos library, iCloud settings, or photos on an iPhone. It does not reduce the size of the source library.
 
-## 必要なもの
+## Scope and limitations
 
-- macOS、Go 1.24以上
-- [rclone](https://rclone.org/install/) とGoogle Drive remote設定（転送処理に使用）
-- ライブラリへの読み取り権限。`Operation not permitted` の場合は「システム設定 → プライバシーとセキュリティ → フルディスクアクセス」で実行元のTerminal等を許可し、再起動してください。
+- The CLI reads local images and videos under `originals/` in a current Photos library. It does not use PhotoKit or the Photos app's Export command. See `media` in `main.go` for supported extensions.
+- It does not query iCloud or check whether an original exists there. Originals that are not stored locally are excluded. Files carrying the macOS dataless flag are not read.
+- Files are saved with their internal library names, which are often UUIDs. Embedded EXIF and other data remain byte-for-byte intact, but Photos albums, people, favorites, edits, and user-facing original filenames are not exported.
+- The image and video components of a Live Photo are uploaded as separate files. RAW and JPEG pairs are also separate. Google Drive will not reconstruct them as Apple Live Photos.
+- The CLI does not inspect the Photos database for deleted or hidden status. If an original from Recently Deleted still exists under `originals/`, it may be included. Referenced originals stored outside the library are excluded.
+- This tool therefore does not guarantee a complete backup of everything visible in the Photos app. Do not delete an entire Photos library based only on a successful run of this tool.
+- Older libraries without an `originals/` directory return an explicit error. Quit Photos and avoid reorganizing or moving the library while the CLI is running.
+
+## Requirements
+
+- macOS and Go 1.24 or later
+- [rclone](https://rclone.org/install/) with a configured Google Drive remote
+- Read access to the Photos library. If you see `Operation not permitted`, open **System Settings → Privacy & Security → Full Disk Access**, allow the Terminal or other app running the command, and restart that app.
 
 ```sh
-# Homebrewを利用している場合
+# When using Homebrew
 brew install rclone
 rclone config
 ```
 
-`rclone config` でremote名を `gdrive`、保存先の種類を `drive` にしてブラウザでGoogle認証してください。Google PhotosではなくGoogle Driveを選びます。OAuthトークンはrcloneの設定に保存され、本CLIの状態ファイルには保存されません。
+In `rclone config`, create a remote named `gdrive`, choose `drive` as its storage type, and complete Google authorization in the browser. Select Google Drive, not Google Photos. rclone stores the OAuth token in its own configuration; this CLI does not store it in its state file.
 
-## ビルド・実行
+## Build and run
 
 ```sh
 cd ~/work/go/photos-to-drive
 go build -o photos-to-drive .
 
-# プレビュー（ライブラリ名はFinderで確認。ドラッグ＆ドロップでも指定できます）
-./photos-to-drive --library "$HOME/Pictures/写真ライブラリ.photoslibrary"
+# Preview. Confirm the library name in Finder; you can also drag it into Terminal.
+./photos-to-drive --library "$HOME/Pictures/Photos Library.photoslibrary"
 
-# 最初に3ファイルだけ試す
+# Start with three files
 ./photos-to-drive \
-  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
   --remote 'gdrive:MacPhotos' \
   --execute --limit 3
 
-# 同じ指定で続きを転送
+# Continue using the same arguments
 ./photos-to-drive \
-  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
   --remote 'gdrive:MacPhotos' \
   --execute
 ```
 
-名前の濁点がmacOS上で別のUnicode表現になっていることがあります。パスが見つからない場合はFinderから実際のパスをドラッグして入力してください。
+Photos library names may differ by language, and macOS may encode accented characters in a different Unicode form. If the path is not found, drag the actual library from Finder into Terminal to enter its path.
 
-- `--execute` がなければ一覧表示のみ。認証、アップロード、一時コピーは行いません。
-- デフォルトで `.photos-to-drive/` に状態と一時コピーを置きます。別の場所なら `--work /path/to/work` を指定します。ライブラリ内は指定できません。
-- 一時コピーは最大1ファイル分。空き容量を最低2GiB残せない大きなファイルはスキップし、終了コード1にします。`--reserve-bytes` で調整できます。
-- `--limit` はその実行で新たに処理するファイル数の上限です。画像と動画はそれぞれ1ファイルです。
-- Ctrl+Cで停止可能。コピー途中は破棄、転送・検証の失敗では一時コピーを残します。次回起動時は専用stagingの残りを削除して元ファイルから再試行します。
-- 転送先は `remote/ライブラリパス識別子/原本のサブフォルダ/MD5-内部ファイル名`。内容が変わった場合は別名になり、以前の内容は残ります。`rclone copyto --immutable` を利用し、既存の異なる内容を上書きしません。
-- 転送後にGoogle Drive側のサイズとMD5を取得し、一致した場合のみ状態を原子的に保存して一時コピーを削除します。チェックサムが得られない場合は失敗とします。
-- 同じソース・保存先・状態ディレクトリで再開すると、サイズと更新時刻が変わっていない成功済みファイルはスキップします。**スキップ時にクラウドを再検証しません。** 転送先を手動削除した場合や再検証したい場合は新しい `--work` を使ってください。
-- 転送途中のファイルのバイト位置からの再開ではなく、ファイル単位の再試行です。
-- `state.json` はパスと転送先・検証日時・チェックサムの記録です。保管してください。異なる保存先やライブラリには別のworkディレクトリを指定します。
-- 同じworkディレクトリでの同時実行はロックで防ぎます。別workを使って同じ転送先へ同時実行しないでください。
+- Without `--execute`, the command only lists eligible files. It does not authenticate, upload, or create temporary copies.
+- By default, state and temporary copies are kept in `.photos-to-drive/`. Use `--work /path/to/work` to choose another location. The work directory cannot be inside the Photos library.
+- At most one file is staged at a time. A file is skipped, and the command exits with status 1, if staging it would leave less than 2 GiB free. Change the threshold with `--reserve-bytes`.
+- `--limit` sets the maximum number of new files attempted in a run. Images and videos each count as one file.
+- Press Ctrl+C to stop. A temporary copy interrupted during local copying is removed. A copy is retained when upload or verification fails. On the next run, the CLI removes leftovers from its dedicated staging directory and retries from the original.
+- The destination path is `remote/library-path-identifier/original-subdirectory/MD5-internal-filename`. Changed content receives a new name, preserving the previous object. `rclone copyto --immutable` prevents overwriting an existing object with different content.
+- After upload, the CLI reads the Google Drive object's size and MD5. It records progress atomically and removes the temporary copy only when both match. A missing checksum is treated as a failure.
+- When resumed with the same source, destination, and work directory, verified files whose size and modification time have not changed are skipped. **Skipped cloud objects are not verified again.** If an object was manually removed from Drive, or you want a fresh verification, use a new `--work` directory.
+- Resume works at file granularity, not from a byte offset within an interrupted upload.
+- Keep `state.json`; it records the local path, destination, verification time, and checksum. Use a separate work directory for each source library or destination.
+- A lock prevents concurrent use of the same work directory. Do not run separate work directories concurrently against the same destination.
 
-## テスト
+## Test
 
 ```sh
 go test -race ./...
 go vet ./...
 ```
 
-テストではローカルの偽ライブラリと転送バックエンドを使い、成功後の再開、検証失敗、元ファイル保持、容量制限、宛先変更拒否、キャンセル等を検証します。実際のGoogleアカウントは使いません。
+Tests use a local mock Photos library and transfer backend. They cover resume after success, verification failure, preservation of originals, free-space limits, destination mismatch, and cancellation. They do not access a real Google account.
