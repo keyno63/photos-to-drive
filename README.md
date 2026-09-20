@@ -30,7 +30,32 @@ brew install rclone
 rclone config
 ```
 
+If Homebrew is not installed, use rclone's official precompiled binary without `sudo`. The following commands install the Apple Silicon build in `~/.local/bin`:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+cd "$HOME/Downloads"
+curl -O https://downloads.rclone.org/rclone-current-osx-arm64.zip
+unzip -a rclone-current-osx-arm64.zip
+cp rclone-*-osx-arm64/rclone "$HOME/.local/bin/rclone"
+chmod 755 "$HOME/.local/bin/rclone"
+"$HOME/.local/bin/rclone" version
+"$HOME/.local/bin/rclone" config
+```
+
+For an Intel Mac, replace both occurrences of `arm64` with `amd64`. Check the CPU type with `uname -m`: `arm64` means Apple Silicon and `x86_64` means Intel. The [official rclone installation guide](https://rclone.org/install/) also provides browser-download and system-wide installation options.
+
 In `rclone config`, create a remote named `gdrive`, choose `drive` as its storage type, and complete Google authorization in the browser. Select Google Drive, not Google Photos. rclone stores the OAuth token in its own configuration; this CLI does not store it in its state file.
+
+When rclone is installed in `~/.local/bin` and that directory is not on `PATH`, pass its location to the CLI:
+
+```sh
+./photos-to-drive \
+  --rclone "$HOME/.local/bin/rclone" \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --remote 'gdrive:MacPhotos' \
+  --execute --limit 3
+```
 
 ## Build and run
 

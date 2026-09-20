@@ -28,7 +28,32 @@ brew install rclone
 rclone config
 ```
 
+Homebrewがない場合は、rclone公式のビルド済みバイナリを `sudo` なしで導入できます。次のコマンドはAppleシリコン版を `~/.local/bin` に配置します。
+
+```sh
+mkdir -p "$HOME/.local/bin"
+cd "$HOME/Downloads"
+curl -O https://downloads.rclone.org/rclone-current-osx-arm64.zip
+unzip -a rclone-current-osx-arm64.zip
+cp rclone-*-osx-arm64/rclone "$HOME/.local/bin/rclone"
+chmod 755 "$HOME/.local/bin/rclone"
+"$HOME/.local/bin/rclone" version
+"$HOME/.local/bin/rclone" config
+```
+
+Intel Macでは、上記2か所の `arm64` を `amd64` に置き換えてください。`uname -m` の結果が `arm64` ならAppleシリコン、`x86_64` ならIntelです。ブラウザからのダウンロードやシステム全体への導入方法は、[rclone公式インストールガイド](https://rclone.org/install/)でも確認できます。
+
 `rclone config` でremote名を `gdrive`、保存先の種類を `drive` にしてブラウザでGoogle認証してください。Google PhotosではなくGoogle Driveを選びます。OAuthトークンはrcloneの設定に保存され、本CLIの状態ファイルには保存されません。
+
+`~/.local/bin` に入れたrcloneへPATHが通っていない場合は、CLIに場所を指定します。
+
+```sh
+./photos-to-drive \
+  --rclone "$HOME/.local/bin/rclone" \
+  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --remote 'gdrive:MacPhotos' \
+  --execute --limit 3
+```
 
 ## ビルド・実行
 
