@@ -187,3 +187,15 @@ func TestVerifyRejectsMissingHashAndWrongSize(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyAcceptsCaseInsensitiveMD5Key(t *testing.T) {
+	for _, s := range []string{
+		`{"Size":3,"Hashes":{"MD5":"abc"}}`,
+		`{"Size":3,"Hashes":{"md5":"abc"}}`,
+		`{"Size":3,"Hashes":{"Md5":"ABC"}}`,
+	} {
+		if err := verify([]byte(s), 3, "abc"); err != nil {
+			t.Fatalf("verify(%s): %v", s, err)
+		}
+	}
+}

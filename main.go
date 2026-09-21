@@ -372,7 +372,14 @@ func verify(b []byte, size int64, hash string) error {
 	if e := json.Unmarshal(b, &v); e != nil {
 		return e
 	}
-	if v.IsDir || v.Size != size || hash == "" || !strings.EqualFold(v.Hashes["MD5"], hash) {
+	remoteMD5 := ""
+	for name, value := range v.Hashes {
+		if strings.EqualFold(name, "MD5") {
+			remoteMD5 = value
+			break
+		}
+	}
+	if v.IsDir || v.Size != size || hash == "" || !strings.EqualFold(remoteMD5, hash) {
 		return errors.New("remote size/MD5 mismatch or unavailable checksum")
 	}
 	return nil
