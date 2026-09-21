@@ -27,7 +27,6 @@ The tool does not modify the source Photos library, iCloud settings, or photos o
 ```sh
 # When using Homebrew
 brew install rclone
-rclone config
 ```
 
 If Homebrew is not installed, use rclone's official precompiled binary without `sudo`. The following commands install the Apple Silicon build in `~/.local/bin`:
@@ -40,12 +39,56 @@ unzip -a rclone-current-osx-arm64.zip
 cp rclone-*-osx-arm64/rclone "$HOME/.local/bin/rclone"
 chmod 755 "$HOME/.local/bin/rclone"
 "$HOME/.local/bin/rclone" version
-"$HOME/.local/bin/rclone" config
 ```
 
 For an Intel Mac, replace both occurrences of `arm64` with `amd64`. Check the CPU type with `uname -m`: `arm64` means Apple Silicon and `x86_64` means Intel. The [official rclone installation guide](https://rclone.org/install/) also provides browser-download and system-wide installation options.
 
-In `rclone config`, create a remote named `gdrive`, choose `drive` as its storage type, and complete Google authorization in the browser. Select Google Drive, not Google Photos. rclone stores the OAuth token in its own configuration; this CLI does not store it in its state file.
+## Configure Google Drive
+
+rclone's shared Google OAuth client is being retired during 2026. Create your own OAuth client before configuring the remote. The complete upstream procedure is in [rclone: Making your own client ID](https://rclone.org/drive/#making-your-own-client-id).
+
+In Google Cloud Console:
+
+1. Create or select a project and enable **Google Drive API**.
+2. Open **Google Auth Platform** and configure an External audience. While the app is in Testing, add the Google account that owns the destination Drive as a test user. Testing authorizations expire after seven days.
+3. Under Data Access, add `https://www.googleapis.com/auth/drive.file`. This narrow, non-sensitive scope lets rclone access files it creates without granting access to every existing Drive file. Let rclone create the destination folder; a folder created manually in the Drive website might not be visible with this scope. See [Google's Drive scope guide](https://developers.google.com/workspace/drive/api/guides/api-specific-auth).
+4. Create an OAuth client with application type **Desktop app**. Copy its Client ID and Client Secret. Do not publish either value or commit them to the repository.
+
+Then configure rclone. If it is installed in `~/.local/bin`, use the full path shown here; otherwise `rclone config` is sufficient.
+
+```sh
+"$HOME/.local/bin/rclone" config
+```
+
+Use these answers. Menu numbers can change between rclone versions, so enter the text value where shown.
+
+| Prompt | Answer |
+| --- | --- |
+| Create a new remote | `n` |
+| `name>` | `gdrive` |
+| `Storage>` | `drive` (Google Drive, not Google Cloud Storage or Google Photos) |
+| `client_id>` | Your Desktop app Client ID |
+| `client_secret>` | Your Desktop app Client Secret |
+| `scope>` | `drive.file` or its displayed menu choice |
+| `service_account_file>` | Leave blank |
+| Edit advanced config? | `n` |
+| Use web browser to authenticate? | `y` |
+| Configure as a Shared Drive? | `n`, unless you specifically use a Google Workspace Shared Drive |
+| Keep this remote? | `y` |
+
+In the browser, sign in with the exact Google account added as a test user and grant access. An **Access blocked** page usually means that account is not listed under **Google Auth Platform → Audience → Test users**, or that the OAuth Client ID belongs to a different Cloud project.
+
+Verify the saved remote and authentication before running this CLI:
+
+```sh
+"$HOME/.local/bin/rclone" listremotes
+"$HOME/.local/bin/rclone" lsd "gdrive:"
+"$HOME/.local/bin/rclone" about "gdrive:"
+```
+
+`listremotes` must include `gdrive:`. `lsd` may print nothing when the remote has not created any folders yet, but it must exit without an authentication error. `about` should show the Drive quota.
+
+rclone stores the Client ID and OAuth tokens in `~/.config/rclone/rclone.conf`; this CLI does not copy them into `state.json`. Treat `rclone.conf` as a secret and do not commit or share it. If you see `didn't find section in config file ("gdrive")`, the configuration was not completed or the remote was saved under another name.
 
 When rclone is installed in `~/.local/bin` and that directory is not on `PATH`, pass its location to the CLI:
 

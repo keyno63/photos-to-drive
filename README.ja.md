@@ -25,7 +25,6 @@ macOS向けGo CLI。Apple「写真」ライブラリ内に実在する原本を 
 ```sh
 # Homebrewを利用している場合
 brew install rclone
-rclone config
 ```
 
 Homebrewがない場合は、rclone公式のビルド済みバイナリを `sudo` なしで導入できます。次のコマンドはAppleシリコン版を `~/.local/bin` に配置します。
@@ -38,12 +37,56 @@ unzip -a rclone-current-osx-arm64.zip
 cp rclone-*-osx-arm64/rclone "$HOME/.local/bin/rclone"
 chmod 755 "$HOME/.local/bin/rclone"
 "$HOME/.local/bin/rclone" version
-"$HOME/.local/bin/rclone" config
 ```
 
 Intel Macでは、上記2か所の `arm64` を `amd64` に置き換えてください。`uname -m` の結果が `arm64` ならAppleシリコン、`x86_64` ならIntelです。ブラウザからのダウンロードやシステム全体への導入方法は、[rclone公式インストールガイド](https://rclone.org/install/)でも確認できます。
 
-`rclone config` でremote名を `gdrive`、保存先の種類を `drive` にしてブラウザでGoogle認証してください。Google PhotosではなくGoogle Driveを選びます。OAuthトークンはrcloneの設定に保存され、本CLIの状態ファイルには保存されません。
+## Google Driveへの接続設定
+
+rcloneの共有Google OAuthクライアントは2026年中に廃止予定です。remoteを設定する前に、自分専用のOAuthクライアントを作成します。詳細は[rclone公式「Making your own client ID」](https://rclone.org/drive/#making-your-own-client-id)を参照してください。
+
+Google Cloud Consoleで次の設定を行います。
+
+1. プロジェクトを作成または選択し、**Google Drive API**を有効にします。
+2. **Google Auth Platform**を開き、対象をExternalとして設定します。アプリがテスト中の場合は、転送先Driveを所有するGoogleアカウントをテストユーザーに追加します。テスト中の認証は7日後に失効します。
+3. 「データアクセス」に `https://www.googleapis.com/auth/drive.file` を追加します。この権限なら、rcloneが作成したファイルへアクセスでき、Drive内の既存ファイル全体への権限は与えません。転送先フォルダはrcloneに作成させてください。Google Driveの画面で手作業で作ったフォルダは、この権限では見えない場合があります。詳細は[Google公式のDrive権限ガイド](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)を参照してください。
+4. アプリケーションの種類を**デスクトップアプリ**としてOAuthクライアントを作成し、Client IDとClient Secretを控えます。これらを公開したり、リポジトリへコミットしたりしないでください。
+
+次にrcloneを設定します。`~/.local/bin` に導入した場合は次のフルパスを使います。PATHが通っている場合は `rclone config` でも構いません。
+
+```sh
+"$HOME/.local/bin/rclone" config
+```
+
+次のように回答します。番号はrcloneのバージョンで変わるため、記載した文字列を入力できる項目では文字列を使います。
+
+| 質問 | 入力内容 |
+| --- | --- |
+| 新しいremoteを作成 | `n` |
+| `name>` | `gdrive` |
+| `Storage>` | `drive`（Google Cloud StorageやGoogle PhotosではなくGoogle Drive） |
+| `client_id>` | デスクトップアプリのClient ID |
+| `client_secret>` | デスクトップアプリのClient Secret |
+| `scope>` | `drive.file`、または画面に表示された対応番号 |
+| `service_account_file>` | 空欄のままEnter |
+| 高度な設定を編集するか | `n` |
+| ブラウザで認証するか | `y` |
+| Shared Driveとして設定するか | Google Workspaceの共有ドライブを明示的に使う場合以外は`n` |
+| remoteを保存するか | `y` |
+
+ブラウザでは、テストユーザーに追加したものと同じGoogleアカウントでログインし、アクセスを許可します。**「アクセスをブロック」**と表示される場合は、通常、そのアカウントが **Google Auth Platform → 対象（Audience）→ テストユーザー** に追加されていないか、OAuth Client IDを作成したCloudプロジェクトとは別のプロジェクトを編集しています。
+
+このCLIを実行する前に、remoteの保存と認証を確認します。
+
+```sh
+"$HOME/.local/bin/rclone" listremotes
+"$HOME/.local/bin/rclone" lsd "gdrive:"
+"$HOME/.local/bin/rclone" about "gdrive:"
+```
+
+`listremotes` に `gdrive:` が表示される必要があります。まだrcloneがフォルダを作っていない場合、`lsd` は何も表示しないことがありますが、認証エラーなしで終了すれば問題ありません。`about` ではDriveの容量が表示されます。
+
+rcloneはClient IDとOAuthトークンを `~/.config/rclone/rclone.conf` に保存します。このCLIの `state.json` にはコピーしません。`rclone.conf` は秘密情報として扱い、共有やコミットをしないでください。`didn't find section in config file ("gdrive")` と表示された場合は、設定が最後まで保存されていないか、remoteを別の名前で保存しています。
 
 `~/.local/bin` に入れたrcloneへPATHが通っていない場合は、CLIに場所を指定します。
 
