@@ -43,10 +43,10 @@ type state struct {
 }
 type options struct {
 	library, remote, work, rclone, report string
-	execute                       bool
-	status                        bool
-	limit                         int
-	reserve                       uint64
+	execute                               bool
+	status                                bool
+	limit                                 int
+	reserve                               uint64
 }
 type runner func(context.Context, ...string) ([]byte, error)
 
@@ -404,6 +404,13 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 		completed++
 		fmt.Fprintf(out, "VERIFIED %s\n", f.Path)
 	}
+	verifiedNow := 0
+	for _, f := range files {
+		if r, ok := s.Done[f.Path]; ok && r.Size == f.Size && r.Modified == f.Modified {
+			verifiedNow++
+		}
+	}
+	fmt.Fprintf(out, "Checkpoint: %d/%d currently eligible files verified unchanged; %d remaining.\n", verifiedNow, len(files), len(files)-verifiedNow)
 	fmt.Fprintf(out, "Complete: %d newly verified; %d skipped/failed. Photos originals were not modified.\n", completed, failed)
 	if failed > 0 {
 		return errors.New("some files were not transferred; see SKIP messages and rerun to retry")

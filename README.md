@@ -100,6 +100,44 @@ When rclone is installed in `~/.local/bin` and that directory is not on `PATH`, 
   --execute --limit 3
 ```
 
+## Check transfer status
+
+The checkpoint records each file only after Google Drive reports the same size and MD5. View a summary without contacting or modifying Google Drive:
+
+```sh
+go run . \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --status
+```
+
+Write a detailed CSV containing every eligible local path and its status:
+
+```sh
+go run . \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --status \
+  --report transfer-status.csv
+```
+
+The status values are:
+
+- `verified`: size and modification time still match a successful upload-and-MD5-verification record.
+- `pending`: no successful transfer record exists.
+- `changed_since_verification`: the local file changed after its recorded transfer and must be processed again.
+- `source_missing_after_verification`: a recorded source path is no longer in the current local inventory.
+
+This status is based on the local checkpoint. It does not re-query objects that may have been manually removed from Google Drive later. For a final check before removing the local library, rerun the transfer with a new work directory. Existing matching Drive objects are retained and verified; missing objects are uploaded again.
+
+```sh
+go run . \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --remote 'gdrive:MacPhotos' \
+  --work .photos-to-drive-final-audit \
+  --execute
+```
+
+Do not delete individual files inside `Photos Library.photoslibrary/originals`; that can corrupt the Photos library. Use the report to confirm completion, then handle removal of the library through a separate, deliberate procedure.
+
 ## Build and run
 
 ```sh

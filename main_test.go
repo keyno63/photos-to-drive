@@ -75,6 +75,46 @@ func TestTransferResumeAndOriginalUnchanged(t *testing.T) {
 		t.Fatal("staging not cleaned")
 	}
 }
+
+func TestStatusAndCSVReport(t *testing.T) {
+	o, p := fixture(t)
+	n := 0
+	if err := run(context.Background(), o, backend(t, false, &n), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	second := filepath.Join(filepath.Dir(p), "b.jpg")
+	if err := os.WriteFile(second, []byte("pending-photo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := filepath.Join(filepath.Dir(o.work), "status.csv")
+	o.report = report
+	var out bytes.Buffer
+	if err := showStatus(o, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "verified unchanged: 1; pending: 1; changed since verification: 0") {
+		t.Fatalf("unexpected status: %s", out.String())
+	}
+	b, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "verified,A/a.jpg") || !strings.Contains(text, "pending,A/b.jpg") {
+		t.Fatalf("unexpected report: %s", text)
+	}
+	if err = os.WriteFile(p, []byte("changed-photo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	o.report = ""
+	if err = showStatus(o, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "verified unchanged: 0; pending: 1; changed since verification: 1") {
+		t.Fatalf("unexpected changed status: %s", out.String())
+	}
+}
 func TestVerificationFailureRetainsStageWithoutCheckpoint(t *testing.T) {
 	o, p := fixture(t)
 	n := 0

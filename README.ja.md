@@ -98,6 +98,44 @@ rcloneはClient IDとOAuthトークンを `~/.config/rclone/rclone.conf` に保�
   --execute --limit 3
 ```
 
+## 転送状況の確認
+
+Google Drive側のサイズとMD5が一致したファイルだけを、状態ファイルへ記録します。Google Driveへ接続したり変更したりせず、現在の集計を確認できます。
+
+```sh
+go run . \
+  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --status
+```
+
+対象となる全ローカルパスと状態をCSVへ出力する場合は、次のように実行します。
+
+```sh
+go run . \
+  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --status \
+  --report transfer-status.csv
+```
+
+状態の意味は次のとおりです。
+
+- `verified`：サイズと更新時刻が、転送・MD5検証に成功した記録と現在も一致しています。
+- `pending`：転送成功の記録がありません。
+- `changed_since_verification`：転送記録後にローカルファイルが変化したため、再処理が必要です。
+- `source_missing_after_verification`：転送記録はありますが、現在のローカル一覧には元パスがありません。
+
+この表示はローカルの状態記録に基づきます。転送後にGoogle Drive側で手動削除されたファイルまでは再照会しません。写真ライブラリを削除する前の最終確認では、新しいworkディレクトリを指定して再実行してください。Drive上で一致する既存ファイルは残したまま検証し、欠けているものは再アップロードします。
+
+```sh
+go run . \
+  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --remote 'gdrive:MacPhotos' \
+  --work .photos-to-drive-final-audit \
+  --execute
+```
+
+`写真ライブラリ.photoslibrary/originals` 内のファイルを個別に削除しないでください。写真ライブラリを壊す可能性があります。このレポートは全件完了の確認に使い、ライブラリの削除は別の明示的な手順で行います。
+
 ## ビルド・実行
 
 ```sh
