@@ -42,11 +42,11 @@ type state struct {
 	Done   map[string]record
 }
 type options struct {
-	library, remote, work, rclone, report string
-	execute                               bool
-	status                                bool
-	limit                                 int
-	reserve                               uint64
+	library, remote, work, rclone, report, photosReport string
+	execute                                             bool
+	status                                              bool
+	limit                                               int
+	reserve                                             uint64
 }
 type runner func(context.Context, ...string) ([]byte, error)
 
@@ -57,6 +57,7 @@ func main() {
 	flag.StringVar(&o.work, "work", ".photos-to-drive", "private staging and state directory")
 	flag.StringVar(&o.rclone, "rclone", "rclone", "rclone executable")
 	flag.StringVar(&o.report, "report", "", "write local transfer status as CSV")
+	flag.StringVar(&o.photosReport, "photos-report", "", "write Photos titles and transfer status as CSV")
 	flag.BoolVar(&o.execute, "execute", false, "upload files (default: list only)")
 	flag.BoolVar(&o.status, "status", false, "summarize verified, pending, and changed local files")
 	flag.IntVar(&o.limit, "limit", 0, "maximum new files per run; 0 means all")
@@ -65,7 +66,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var err error
-	if o.status || o.report != "" {
+	if o.photosReport != "" {
+		err = showPhotosReport(ctx, o, os.Stdout, nil)
+	} else if o.status || o.report != "" {
 		err = showStatus(o, os.Stdout)
 	} else {
 		err = run(ctx, o, nil, os.Stdout)

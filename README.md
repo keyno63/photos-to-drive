@@ -136,7 +136,19 @@ go run . \
   --execute
 ```
 
-Do not delete individual files inside `Photos Library.photoslibrary/originals`; that can corrupt the Photos library. Use the report to confirm completion, then handle removal of the library through a separate, deliberate procedure.
+To map internal UUID paths back to items visible in Photos, including each item's original filename and title, create a Photos metadata report:
+
+```sh
+go run . \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --photos-report photos-transfer-status.csv
+```
+
+Photos opens while the metadata is read. On first use, macOS may ask for permission for Terminal to control Photos; allow it under **System Settings → Privacy & Security → Automation**. The report groups a Live Photo's image and video under one Photos item and marks the item `verified` only when every corresponding local resource is verified. Other possible values include `partially_verified`, `pending`, `changed_since_verification`, and `not_found_in_photos`.
+
+The mapping uses the asset UUID shared by the Photos local identifier and the filename under `originals/`. Review any `not_found_in_photos` or `unmatched_local_filename` rows rather than assuming they are safe to remove.
+
+Do not delete individual files inside `Photos Library.photoslibrary/originals`; that can corrupt the Photos library. This CLI intentionally does not currently delete Photos items. Deleting through Apple's supported Photos API moves the asset to Recently Deleted, but with iCloud Photos enabled that deletion also propagates to iCloud and other synced devices. Use the report to confirm completion, then choose a separate cleanup procedure that matches the intended iCloud behavior.
 
 ## Build and run
 

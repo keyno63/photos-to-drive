@@ -134,7 +134,19 @@ go run . \
   --execute
 ```
 
-`写真ライブラリ.photoslibrary/originals` 内のファイルを個別に削除しないでください。写真ライブラリを壊す可能性があります。このレポートは全件完了の確認に使い、ライブラリの削除は別の明示的な手順で行います。
+`originals/`内のUUIDパスを、「写真」アプリ上の項目、元ファイル名、タイトルへ対応付けるレポートも作成できます。
+
+```sh
+go run . \
+  --library "$HOME/Pictures/写真ライブラリ.photoslibrary" \
+  --photos-report photos-transfer-status.csv
+```
+
+メタデータの読み取り中は「写真」アプリが開きます。初回はmacOSからTerminalによる「写真」の操作許可を求められる場合があります。**システム設定 → プライバシーとセキュリティ → オートメーション**で許可してください。Live Photoの静止画と動画は1つの写真項目にまとめ、対応する全ローカルリソースが検証済みの場合だけ`verified`にします。ほかに`partially_verified`、`pending`、`changed_since_verification`、`not_found_in_photos`などがあります。
+
+対応付けには、「写真」のローカル識別子と`originals/`内のファイル名に共通するasset UUIDを使います。`not_found_in_photos`や`unmatched_local_filename`の行は、安全に削除できると判断せず個別に確認してください。
+
+`写真ライブラリ.photoslibrary/originals` 内のファイルを個別に削除しないでください。写真ライブラリを壊す可能性があります。現時点では、このCLIから写真項目を削除する機能は意図的に追加していません。Appleの正式な写真APIで削除すると「最近削除した項目」へ移動しますが、iCloud写真がONの場合、その削除はiCloudや同期中のiPhoneにも反映されます。このレポートで全件完了を確認した後、希望するiCloudの挙動に合う別の削除手順を選びます。
 
 ## ビルド・実行
 
