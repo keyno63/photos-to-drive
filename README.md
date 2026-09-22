@@ -126,7 +126,7 @@ Photos library names may differ by language, and macOS may encode accented chara
 
 - Without `--execute`, the command only lists eligible files. It does not authenticate, upload, or create temporary copies.
 - By default, state and temporary copies are kept in `.photos-to-drive/`. Use `--work /path/to/work` to choose another location. The work directory cannot be inside the Photos library.
-- At most one file is staged at a time. A file is skipped, and the command exits with status 1, if staging it would leave less than 2 GiB free. Change the threshold with `--reserve-bytes`.
+- At most one file is staged at a time. If free space falls to 2 GiB or less, processing stops safely; if an individual file does not fit above that reserve, only that file is skipped. `STOP` and `SKIP` messages show the file size, current free space, safety reserve, and usable staging space so the cause is explicit. The command exits with status 1 in either case. Free some space and rerun the same command to continue from the checkpoint. Change the threshold with `--reserve-bytes`, but lowering it on an almost-full system is not recommended.
 - `--limit` sets the maximum number of new files attempted in a run. Images and videos each count as one file.
 - Press Ctrl+C to stop. A temporary copy interrupted during local copying is removed. A copy is retained when upload or verification fails. On the next run, the CLI removes leftovers from its dedicated staging directory and retries from the original.
 - The destination path is `remote/library-path-identifier/original-subdirectory/MD5-internal-filename`. Changed content receives a new name, preserving the previous object. `rclone copyto --immutable` prevents overwriting an existing object with different content.

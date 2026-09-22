@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -39,8 +42,9 @@ type state struct {
 	Done   map[string]record
 }
 type options struct {
-	library, remote, work, rclone string
+	library, remote, work, rclone, report string
 	execute                       bool
+	status                        bool
 	limit                         int
 	reserve                       uint64
 }
@@ -52,16 +56,179 @@ func main() {
 	flag.StringVar(&o.remote, "remote", "", "rclone destination, e.g. gdrive:MacPhotos")
 	flag.StringVar(&o.work, "work", ".photos-to-drive", "private staging and state directory")
 	flag.StringVar(&o.rclone, "rclone", "rclone", "rclone executable")
+	flag.StringVar(&o.report, "report", "", "write local transfer status as CSV")
 	flag.BoolVar(&o.execute, "execute", false, "upload files (default: list only)")
+	flag.BoolVar(&o.status, "status", false, "summarize verified, pending, and changed local files")
 	flag.IntVar(&o.limit, "limit", 0, "maximum new files per run; 0 means all")
 	flag.Uint64Var(&o.reserve, "reserve-bytes", 2<<30, "minimum free disk space to preserve")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := run(ctx, o, nil, os.Stdout); err != nil {
+	var err error
+	if o.status || o.report != "" {
+		err = showStatus(o, os.Stdout)
+	} else {
+		err = run(ctx, o, nil, os.Stdout)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
 		os.Exit(1)
 	}
+}
+
+type statusRow struct {
+	Status      string
+	Path        string
+	Size        int64
+	Modified    int64
+	MD5         string
+	Destination string
+	VerifiedAt  time.Time
+}
+
+func showStatus(o options, out io.Writer) error {
+	if o.library == "" {
+		return errors.New("--library is required; see README.md")
+	}
+	lib, err := filepath.EvalSymlinks(o.library)
+	if err != nil {
+		return err
+	}
+	lib, err = filepath.Abs(lib)
+	if err != nil {
+		return err
+	}
+	root := filepath.Join(lib, "originals")
+	st, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("cannot read originals (check macOS Full Disk Access; unsupported libraries are not scanned): %w", err)
+	}
+	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return errors.New("originals must be a real directory")
+	}
+	files, skipped, err := inventory(root)
+	if err != nil {
+		return err
+	}
+	work, err := filepath.Abs(o.work)
+	if err != nil {
+		return err
+	}
+	work, err = resolveFuture(work)
+	if err != nil {
+		return err
+	}
+	s := state{Source: root, Done: map[string]record{}}
+	statePath := filepath.Join(work, "state.json")
+	if b, e := os.ReadFile(statePath); e == nil {
+		if e = json.Unmarshal(b, &s); e != nil {
+			return fmt.Errorf("invalid state: %w", e)
+		}
+		if s.Source != root || s.Done == nil {
+			return errors.New("state belongs to another source or is invalid; use the matching --work")
+		}
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+
+	rows := make([]statusRow, 0, len(files)+len(s.Done))
+	current := make(map[string]bool, len(files))
+	verified, pending, changed := 0, 0, 0
+	for _, f := range files {
+		current[f.Path] = true
+		r, ok := s.Done[f.Path]
+		row := statusRow{Status: "pending", Path: f.Path, Size: f.Size, Modified: f.Modified}
+		switch {
+		case !ok:
+			pending++
+		case r.Size == f.Size && r.Modified == f.Modified:
+			verified++
+			row.Status = "verified"
+			row.MD5, row.Destination, row.VerifiedAt = r.MD5, r.Destination, r.VerifiedAt
+		default:
+			changed++
+			row.Status = "changed_since_verification"
+			row.MD5, row.Destination, row.VerifiedAt = r.MD5, r.Destination, r.VerifiedAt
+		}
+		rows = append(rows, row)
+	}
+	missingKeys := make([]string, 0)
+	for path := range s.Done {
+		if !current[path] {
+			missingKeys = append(missingKeys, path)
+		}
+	}
+	sort.Strings(missingKeys)
+	for _, path := range missingKeys {
+		r := s.Done[path]
+		rows = append(rows, statusRow{Status: "source_missing_after_verification", Path: path, Size: r.Size, Modified: r.Modified, MD5: r.MD5, Destination: r.Destination, VerifiedAt: r.VerifiedAt})
+	}
+
+	fmt.Fprintf(out, "Source: %s\n", root)
+	if s.Remote != "" {
+		fmt.Fprintf(out, "Recorded remote: %s\n", s.Remote)
+	}
+	fmt.Fprintf(out, "Eligible local files: %d; verified unchanged: %d; pending: %d; changed since verification: %d; source missing after verification: %d; skipped non-eligible entries: %d\n", len(files), verified, pending, changed, len(missingKeys), skipped)
+	if pending == 0 && changed == 0 {
+		fmt.Fprintln(out, "All currently eligible local files have a matching successful transfer record.")
+	} else {
+		fmt.Fprintln(out, "Not ready for whole-library removal: pending or changed files remain.")
+	}
+	if o.report != "" {
+		if err = writeStatusCSV(o.report, lib, rows); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "CSV report: %s\n", o.report)
+	}
+	fmt.Fprintln(out, "This is a local checkpoint report; it does not re-check files currently stored in Google Drive.")
+	return nil
+}
+
+func writeStatusCSV(path, library string, rows []statusRow) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	abs, err = resolveFuture(abs)
+	if err != nil {
+		return err
+	}
+	if inside(library, abs) {
+		return errors.New("--report must not be inside the Photos library")
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(abs), "photos-to-drive-report-*.csv")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err = tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	w := csv.NewWriter(tmp)
+	if err = w.Write([]string{"status", "source_path", "size_bytes", "modified_unix_nano", "md5_at_verification", "drive_destination", "verified_at"}); err == nil {
+		for _, row := range rows {
+			verifiedAt := ""
+			if !row.VerifiedAt.IsZero() {
+				verifiedAt = row.VerifiedAt.Format(time.RFC3339Nano)
+			}
+			if err = w.Write([]string{row.Status, row.Path, strconv.FormatInt(row.Size, 10), strconv.FormatInt(row.Modified, 10), row.MD5, row.Destination, verifiedAt}); err != nil {
+				break
+			}
+		}
+	}
+	w.Flush()
+	if err == nil {
+		err = w.Error()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmpName, abs)
 }
 
 func inside(parent, child string) bool {
@@ -193,8 +360,13 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 		if e != nil {
 			return e
 		}
-		if uint64(f.Size) > free || free-uint64(f.Size) < o.reserve {
-			fmt.Fprintf(out, "SKIP insufficient space: %s\n", f.Path)
+		if free <= o.reserve {
+			fmt.Fprintf(out, "STOP free space is at or below the safety reserve before %s: free=%s, reserve=%s\n", f.Path, formatBytes(free), formatBytes(o.reserve))
+			failed++
+			break
+		}
+		if uint64(f.Size) > free-o.reserve {
+			fmt.Fprintf(out, "SKIP file is too large for the available staging space: %s (file=%s, free=%s, reserve=%s, usable=%s)\n", f.Path, formatBytes(uint64(f.Size)), formatBytes(free), formatBytes(o.reserve), formatBytes(free-o.reserve))
 			failed++
 			continue
 		}
@@ -363,6 +535,23 @@ func exportFile(ctx context.Context, root string, f item, stage string) (name, h
 	}
 	return name, hex.EncodeToString(h.Sum(nil)), nil
 }
+
+func formatBytes(n uint64) string {
+	const unit = uint64(1024)
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	value := float64(n)
+	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
+	for _, name := range units {
+		value /= float64(unit)
+		if value < float64(unit) || name == units[len(units)-1] {
+			return fmt.Sprintf("%.1f %s", value, name)
+		}
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
 func verify(b []byte, size int64, hash string) error {
 	var v struct {
 		Size   int64

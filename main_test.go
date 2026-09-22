@@ -129,11 +129,30 @@ func TestLowSpaceSkipsWithoutUpload(t *testing.T) {
 	o, _ := fixture(t)
 	o.reserve = ^uint64(0)
 	n := 0
-	if e := run(context.Background(), o, backend(t, false, &n), &bytes.Buffer{}); e == nil {
+	var out bytes.Buffer
+	if e := run(context.Background(), o, backend(t, false, &n), &out); e == nil {
 		t.Fatal("expected insufficient space")
 	}
 	if n != 0 {
 		t.Fatal("uploaded despite reserve")
+	}
+	if strings.Count(out.String(), "STOP free space is at or below the safety reserve") != 1 || !strings.Contains(out.String(), "free=") || !strings.Contains(out.String(), "reserve=") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := map[uint64]string{
+		0:           "0 B",
+		1023:        "1023 B",
+		1024:        "1.0 KiB",
+		1024 * 1024: "1.0 MiB",
+		2 << 30:     "2.0 GiB",
+	}
+	for input, want := range tests {
+		if got := formatBytes(input); got != want {
+			t.Errorf("formatBytes(%d) = %q, want %q", input, got, want)
+		}
 	}
 }
 func TestStateDestinationMismatch(t *testing.T) {
