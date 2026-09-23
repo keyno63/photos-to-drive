@@ -76,6 +76,38 @@ func TestTransferResumeAndOriginalUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunShowsTotalCurrentAndElapsedTime(t *testing.T) {
+	o, p := fixture(t)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(p), "b.jpg"), []byte("second-photo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	var out bytes.Buffer
+	if err := run(context.Background(), o, backend(t, false, &n), &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Progress: 0/2 verified (0.0%); 2 remaining; elapsed=",
+		"[1/2] UPLOAD A/a.jpg",
+		"[1/2] VERIFIED A/a.jpg; verified=1/2; remaining=1; elapsed=",
+		"[2/2] UPLOAD A/b.jpg",
+		"[2/2] VERIFIED A/b.jpg; verified=2/2; remaining=0; elapsed=",
+		"Complete: 2 newly verified; 0 skipped/failed; elapsed=",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in output:\n%s", want, text)
+		}
+	}
+	out.Reset()
+	if err := run(context.Background(), o, backend(t, false, &n), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Progress: 2/2 verified (100.0%); 0 remaining; elapsed=") {
+		t.Fatalf("resume did not include existing checkpoint:\n%s", out.String())
+	}
+}
+
 func TestStatusAndCSVReport(t *testing.T) {
 	o, p := fixture(t)
 	n := 0

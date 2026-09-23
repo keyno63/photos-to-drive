@@ -239,6 +239,7 @@ func inside(parent, child string) bool {
 	return e == nil && r != ".." && !strings.HasPrefix(r, ".."+string(os.PathSeparator))
 }
 func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
+	started := time.Now()
 	if o.library == "" {
 		return errors.New("--library is required; see README.md")
 	}
@@ -314,6 +315,14 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 	} else if !os.IsNotExist(e) {
 		return e
 	}
+	verified := 0
+	for _, f := range files {
+		if r, ok := s.Done[f.Path]; ok && r.Size == f.Size && r.Modified == f.Modified {
+			verified++
+		}
+	}
+	fmt.Fprintf(out, "Started: %s\n", started.Format(time.RFC3339))
+	printProgress(out, verified, len(files), started)
 	if invoke == nil {
 		if _, err = exec.LookPath(o.rclone); err != nil {
 			return fmt.Errorf("install rclone and run rclone config first: %w", err)
@@ -349,7 +358,7 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 		}
 	}
 	completed, failed := 0, 0
-	for _, f := range files {
+	for i, f := range files {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
@@ -364,12 +373,12 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			return e
 		}
 		if free <= o.reserve {
-			fmt.Fprintf(out, "STOP free space is at or below the safety reserve before %s: free=%s, reserve=%s\n", f.Path, formatBytes(free), formatBytes(o.reserve))
+			fmt.Fprintf(out, "[%d/%d] STOP free space is at or below the safety reserve before %s: free=%s, reserve=%s; elapsed=%s\n", i+1, len(files), f.Path, formatBytes(free), formatBytes(o.reserve), elapsed(started))
 			failed++
 			break
 		}
 		if uint64(f.Size) > free-o.reserve {
-			fmt.Fprintf(out, "SKIP file is too large for the available staging space: %s (file=%s, free=%s, reserve=%s, usable=%s)\n", f.Path, formatBytes(uint64(f.Size)), formatBytes(free), formatBytes(o.reserve), formatBytes(free-o.reserve))
+			fmt.Fprintf(out, "[%d/%d] SKIP file is too large for the available staging space: %s (file=%s, free=%s, reserve=%s, usable=%s); elapsed=%s\n", i+1, len(files), f.Path, formatBytes(uint64(f.Size)), formatBytes(free), formatBytes(o.reserve), formatBytes(free-o.reserve), elapsed(started))
 			failed++
 			continue
 		}
@@ -378,14 +387,14 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			fmt.Fprintf(out, "SKIP export %s: %v\n", f.Path, e)
+			fmt.Fprintf(out, "[%d/%d] SKIP export %s: %v; elapsed=%s\n", i+1, len(files), f.Path, e, elapsed(started))
 			failed++
 			continue
 		}
 		// Content-addressed object names prevent overwriting an older or unrelated version.
 		id := sha256.Sum256([]byte(root))
 		dest := o.remote + "/" + hex.EncodeToString(id[:8]) + "/" + filepath.ToSlash(filepath.Dir(f.Path)) + "/" + hash + "-" + filepath.Base(f.Path)
-		fmt.Fprintf(out, "UPLOAD %s (%d bytes)\n", f.Path, f.Size)
+		fmt.Fprintf(out, "[%d/%d] UPLOAD %s (%d bytes); verified=%d/%d; elapsed=%s\n", i+1, len(files), f.Path, f.Size, verified, len(files), elapsed(started))
 		_, e = invoke(ctx, "copyto", tmp, dest, "--checksum", "--immutable", "--retries", "3", "--low-level-retries", "3", "--transfers", "1", "--checkers", "1")
 		if e == nil {
 			var b []byte
@@ -405,7 +414,8 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			return e
 		}
 		completed++
-		fmt.Fprintf(out, "VERIFIED %s\n", f.Path)
+		verified++
+		fmt.Fprintf(out, "[%d/%d] VERIFIED %s; verified=%d/%d; remaining=%d; elapsed=%s\n", i+1, len(files), f.Path, verified, len(files), len(files)-verified, elapsed(started))
 	}
 	verifiedNow := 0
 	for _, f := range files {
@@ -414,11 +424,27 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 		}
 	}
 	fmt.Fprintf(out, "Checkpoint: %d/%d currently eligible files verified unchanged; %d remaining.\n", verifiedNow, len(files), len(files)-verifiedNow)
-	fmt.Fprintf(out, "Complete: %d newly verified; %d skipped/failed. Photos originals were not modified.\n", completed, failed)
+	fmt.Fprintf(out, "Complete: %d newly verified; %d skipped/failed; elapsed=%s. Photos originals were not modified.\n", completed, failed, elapsed(started))
 	if failed > 0 {
 		return errors.New("some files were not transferred; see SKIP messages and rerun to retry")
 	}
 	return nil
+}
+
+func printProgress(out io.Writer, verified, total int, started time.Time) {
+	percent := 100.0
+	if total > 0 {
+		percent = float64(verified) * 100 / float64(total)
+	}
+	fmt.Fprintf(out, "Progress: %d/%d verified (%.1f%%); %d remaining; elapsed=%s\n", verified, total, percent, total-verified, elapsed(started))
+}
+
+func elapsed(started time.Time) time.Duration {
+	d := time.Since(started).Truncate(time.Second)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func resolveFuture(p string) (string, error) {
