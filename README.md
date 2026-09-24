@@ -128,6 +128,18 @@ The status values are:
 
 This status is based on the local checkpoint. It does not re-query objects that may have been manually removed from Google Drive later. For a final check before removing the local library, rerun the transfer with a new work directory. Existing matching Drive objects are retained and verified; missing objects are uploaded again.
 
+## Find duplicates within Google Drive
+
+Compare remote files with each other below a destination without reading the Photos library or changing Google Drive:
+
+```sh
+go run . \
+  --remote 'gdrive:photo_store' \
+  --remote-duplicates
+```
+
+The command groups files with the same size and MD5, then prints every Drive path, the number of duplicate groups, and the reclaimable size if one file per group is kept. It is read-only and never deletes duplicates automatically.
+
 ```sh
 go run . \
   --library "$HOME/Pictures/Photos Library.photoslibrary" \

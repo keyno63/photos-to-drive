@@ -46,6 +46,7 @@ type options struct {
 	execute                                             bool
 	status                                              bool
 	skipRemoteCheck                                     bool
+	remoteDuplicates                                    bool
 	limit                                               int
 	reserve                                             uint64
 }
@@ -62,13 +63,16 @@ func main() {
 	flag.BoolVar(&o.execute, "execute", false, "upload files (default: list only)")
 	flag.BoolVar(&o.status, "status", false, "summarize verified, pending, and changed local files")
 	flag.BoolVar(&o.skipRemoteCheck, "skip-remote-check", false, "skip the recursive duplicate check below --remote")
+	flag.BoolVar(&o.remoteDuplicates, "remote-duplicates", false, "find duplicate files recursively below --remote")
 	flag.IntVar(&o.limit, "limit", 0, "maximum new files per run; 0 means all")
 	flag.Uint64Var(&o.reserve, "reserve-bytes", 2<<30, "minimum free disk space to preserve")
 	flag.Parse()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	var err error
-	if o.photosReport != "" {
+	if o.remoteDuplicates {
+		err = showRemoteDuplicates(ctx, o, nil, os.Stdout)
+	} else if o.photosReport != "" {
 		err = showPhotosReport(ctx, o, os.Stdout, nil)
 	} else if o.status || o.report != "" {
 		err = showStatus(o, os.Stdout)
@@ -101,6 +105,70 @@ type remoteItem struct {
 	Size   int64
 	IsDir  bool
 	Hashes map[string]string
+}
+
+type duplicateGroup struct {
+	Key   contentKey
+	Paths []string
+}
+
+func showRemoteDuplicates(ctx context.Context, o options, invoke runner, out io.Writer) error {
+	remote, err := normalizeRemote(o.remote)
+	if err != nil {
+		return err
+	}
+	if invoke == nil {
+		invoke, err = newRunner(o.rclone)
+		if err != nil {
+			return err
+		}
+	}
+	items, err := listRemote(ctx, invoke, remote)
+	if err != nil {
+		return fmt.Errorf("cannot scan --remote for duplicates: %w", err)
+	}
+	groups := make(map[contentKey][]string)
+	missingHash := 0
+	for _, item := range items {
+		key, ok := remoteContentKey(item)
+		if !ok {
+			missingHash++
+			continue
+		}
+		path := strings.TrimRight(remote, "/") + "/" + strings.TrimLeft(item.Path, "/")
+		groups[key] = append(groups[key], path)
+	}
+	duplicates := make([]duplicateGroup, 0)
+	duplicateFiles := 0
+	var reclaimable int64
+	for key, paths := range groups {
+		if len(paths) < 2 {
+			continue
+		}
+		sort.Strings(paths)
+		duplicates = append(duplicates, duplicateGroup{Key: key, Paths: paths})
+		duplicateFiles += len(paths)
+		reclaimable += key.Size * int64(len(paths)-1)
+	}
+	sort.Slice(duplicates, func(i, j int) bool {
+		if duplicates[i].Key.Size != duplicates[j].Key.Size {
+			return duplicates[i].Key.Size > duplicates[j].Key.Size
+		}
+		return duplicates[i].Paths[0] < duplicates[j].Paths[0]
+	})
+	usable := len(items) - missingHash
+	fmt.Fprintf(out, "Remote files: %d; usable size/MD5 records: %d; without usable MD5: %d.\n", len(items), usable, missingHash)
+	fmt.Fprintf(out, "Duplicate groups: %d; files in duplicate groups: %d; reclaimable if one copy per group is kept: %s.\n", len(duplicates), duplicateFiles, formatBytes(uint64(reclaimable)))
+	for i, group := range duplicates {
+		fmt.Fprintf(out, "DUPLICATE %d: %d files; each=%s; MD5=%s\n", i+1, len(group.Paths), formatBytes(uint64(group.Key.Size)), group.Key.MD5)
+		for _, path := range group.Paths {
+			fmt.Fprintf(out, "  %s\n", path)
+		}
+	}
+	if len(duplicates) == 0 {
+		fmt.Fprintln(out, "No byte-identical remote files found.")
+	}
+	return nil
 }
 
 func showStatus(o options, out io.Writer) error {
@@ -288,11 +356,10 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 		fmt.Fprintln(out, "Preview only. No file contents read, no upload or deletion.")
 		return nil
 	}
-	colon := strings.IndexByte(o.remote, ':')
-	if colon <= 0 || strings.HasPrefix(o.remote, "/") || strings.HasPrefix(o.remote, ":") {
-		return errors.New("--remote must name a configured rclone remote, e.g. gdrive:MacPhotos")
+	o.remote, err = normalizeRemote(o.remote)
+	if err != nil {
+		return err
 	}
-	o.remote = strings.TrimRight(o.remote, "/")
 	work, err := filepath.Abs(o.work)
 	if err != nil {
 		return err
@@ -338,18 +405,9 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 	fmt.Fprintf(out, "Started: %s\n", started.Format(time.RFC3339))
 	printProgress(out, verified, len(files), started)
 	if invoke == nil {
-		if _, err = exec.LookPath(o.rclone); err != nil {
-			return fmt.Errorf("install rclone and run rclone config first: %w", err)
-		}
-		invoke = func(ctx context.Context, args ...string) ([]byte, error) {
-			cmd := exec.CommandContext(ctx, o.rclone, args...)
-			var stderr strings.Builder
-			cmd.Stderr = &stderr
-			b, e := cmd.Output()
-			if e != nil {
-				return nil, fmt.Errorf("rclone %s: %w: %s", args[0], e, stderr.String())
-			}
-			return b, nil
+		invoke, err = newRunner(o.rclone)
+		if err != nil {
+			return err
 		}
 	}
 	var remoteFiles map[contentKey]string
@@ -480,36 +538,75 @@ func scanRemote(ctx context.Context, invoke runner, remote string) (map[contentK
 	if _, err := invoke(ctx, "mkdir", remote); err != nil {
 		return nil, 0, 0, 0, err
 	}
-	b, err := invoke(ctx, "lsjson", remote, "--recursive", "--files-only", "--hash-type", "MD5", "--no-modtime", "--no-mimetype")
+	items, err := listRemote(ctx, invoke, remote)
 	if err != nil {
 		return nil, 0, 0, 0, err
-	}
-	var items []remoteItem
-	if err = json.Unmarshal(b, &items); err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("invalid rclone lsjson response: %w", err)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 	index := make(map[contentKey]string, len(items))
 	usable, missingHash := 0, 0
 	for _, item := range items {
-		md5sum := ""
-		for name, value := range item.Hashes {
-			if strings.EqualFold(name, "MD5") {
-				md5sum = strings.ToLower(strings.TrimSpace(value))
-				break
-			}
-		}
-		if item.IsDir || item.Size < 0 || item.Path == "" || md5sum == "" {
+		key, ok := remoteContentKey(item)
+		if !ok {
 			missingHash++
 			continue
 		}
 		usable++
-		key := contentKey{Size: item.Size, MD5: md5sum}
 		if _, exists := index[key]; !exists {
 			index[key] = strings.TrimRight(remote, "/") + "/" + strings.TrimLeft(item.Path, "/")
 		}
 	}
 	return index, len(items), usable, missingHash, nil
+}
+
+func listRemote(ctx context.Context, invoke runner, remote string) ([]remoteItem, error) {
+	b, err := invoke(ctx, "lsjson", remote, "--recursive", "--files-only", "--hash-type", "MD5", "--no-modtime", "--no-mimetype")
+	if err != nil {
+		return nil, err
+	}
+	var items []remoteItem
+	if err = json.Unmarshal(b, &items); err != nil {
+		return nil, fmt.Errorf("invalid rclone lsjson response: %w", err)
+	}
+	return items, nil
+}
+
+func remoteContentKey(item remoteItem) (contentKey, bool) {
+	md5sum := ""
+	for name, value := range item.Hashes {
+		if strings.EqualFold(name, "MD5") {
+			md5sum = strings.ToLower(strings.TrimSpace(value))
+			break
+		}
+	}
+	if item.IsDir || item.Size < 0 || item.Path == "" || md5sum == "" {
+		return contentKey{}, false
+	}
+	return contentKey{Size: item.Size, MD5: md5sum}, true
+}
+
+func normalizeRemote(remote string) (string, error) {
+	colon := strings.IndexByte(remote, ':')
+	if colon <= 0 || strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, ":") {
+		return "", errors.New("--remote must name a configured rclone remote, e.g. gdrive:MacPhotos")
+	}
+	return strings.TrimRight(remote, "/"), nil
+}
+
+func newRunner(executable string) (runner, error) {
+	if _, err := exec.LookPath(executable); err != nil {
+		return nil, fmt.Errorf("install rclone and run rclone config first: %w", err)
+	}
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, executable, args...)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		b, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("rclone %s: %w: %s", args[0], err, stderr.String())
+		}
+		return b, nil
+	}, nil
 }
 
 func printProgress(out io.Writer, verified, total int, started time.Time) {

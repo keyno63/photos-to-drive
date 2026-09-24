@@ -154,6 +154,37 @@ func TestRemoteDuplicateIsReusedWithoutUpload(t *testing.T) {
 	}
 }
 
+func TestShowRemoteDuplicates(t *testing.T) {
+	o := options{remote: "gdrive:photo_store"}
+	hash := "0123456789abcdef0123456789abcdef"
+	invoke := func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] != "lsjson" || args[1] != o.remote {
+			t.Fatalf("args=%v", args)
+		}
+		return json.Marshal([]map[string]any{
+			{"Path": "0/hoge1.png", "Size": 100, "Hashes": map[string]string{"MD5": hash}},
+			{"Path": "2/hoge5.png", "Size": 100, "Hashes": map[string]string{"md5": strings.ToUpper(hash)}},
+			{"Path": "unique.mov", "Size": 200, "Hashes": map[string]string{"MD5": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+			{"Path": "no-hash.mp4", "Size": 300},
+		})
+	}
+	var out bytes.Buffer
+	if err := showRemoteDuplicates(context.Background(), o, invoke, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Remote files: 4; usable size/MD5 records: 3; without usable MD5: 1",
+		"Duplicate groups: 1; files in duplicate groups: 2; reclaimable if one copy per group is kept: 100 B",
+		"gdrive:photo_store/0/hoge1.png",
+		"gdrive:photo_store/2/hoge5.png",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in output:\n%s", want, text)
+		}
+	}
+}
+
 func TestRemoteNonDuplicateIsUploaded(t *testing.T) {
 	o, _ := fixture(t)
 	o.skipRemoteCheck = false
