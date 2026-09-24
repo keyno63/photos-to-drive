@@ -170,6 +170,12 @@ go build -o photos-to-drive .
   --library "$HOME/Pictures/Photos Library.photoslibrary" \
   --remote 'gdrive:MacPhotos' \
   --execute
+
+# Skip duplicate checking (normally leave this enabled)
+./photos-to-drive \
+  --library "$HOME/Pictures/Photos Library.photoslibrary" \
+  --remote 'gdrive:MacPhotos' \
+  --execute --skip-remote-check
 ```
 
 Photos library names may differ by language, and macOS may encode accented characters in a different Unicode form. If the path is not found, drag the actual library from Finder into Terminal to enter its path.
@@ -178,6 +184,9 @@ Photos library names may differ by language, and macOS may encode accented chara
 - By default, state and temporary copies are kept in `.photos-to-drive/`. Use `--work /path/to/work` to choose another location. The work directory cannot be inside the Photos library.
 - At most one file is staged at a time. If free space falls to 2 GiB or less, processing stops safely; if an individual file does not fit above that reserve, only that file is skipped. `STOP` and `SKIP` messages show the file size, current free space, safety reserve, and usable staging space so the cause is explicit. The command exits with status 1 in either case. Free some space and rerun the same command to continue from the checkpoint. Change the threshold with `--reserve-bytes`, but lowering it on an almost-full system is not recommended.
 - `--limit` sets the maximum number of new files attempted in a run. Images and videos each count as one file.
+- By default, `--execute` recursively lists every file below `--remote` at startup. When an existing object has the same size and MD5 as a local original, the CLI records that Drive path as verified without uploading again, even when its name or subdirectory differs. Identical content uploaded earlier in the same run is also reused. Photos and videos use the same check. EXIF and capture timestamps are not used because they cannot prove file identity.
+- `--skip-remote-check` skips the initial recursive Drive listing and duplicate comparison. Use it only when the destination is very large and you know it contains no duplicates.
+- With the Google OAuth `drive.file` scope, only files created by rclone are visible to the listing. The remote needs broader listing access to inspect files added through the Drive website or another application. Items without an MD5 are excluded from matching and reported in the startup counts.
 - At startup, the CLI prints the verified count, total eligible file count, remaining count, and start time. Each file line includes `[current position/total]`, the cumulative verified count, and elapsed time; the completion line includes total elapsed time. On resumed runs, files verified by earlier runs are included in the cumulative count.
 - Press Ctrl+C to stop. A temporary copy interrupted during local copying is removed. A copy is retained when upload or verification fails. On the next run, the CLI removes leftovers from its dedicated staging directory and retries from the original.
 - The destination path is `remote/library-path-identifier/original-subdirectory/MD5-internal-filename`. Changed content receives a new name, preserving the previous object. `rclone copyto --immutable` prevents overwriting an existing object with different content.

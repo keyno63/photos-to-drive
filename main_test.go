@@ -25,7 +25,7 @@ func fixture(t *testing.T) (options, string) {
 	if e := os.WriteFile(p, []byte("original-photo"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	return options{library: lib, remote: "gdrive:Archive", work: filepath.Join(dir, "work"), execute: true}, p
+	return options{library: lib, remote: "gdrive:Archive", work: filepath.Join(dir, "work"), execute: true, skipRemoteCheck: true}, p
 }
 func backend(t *testing.T, bad bool, calls *int) runner {
 	t.Helper()
@@ -105,6 +105,102 @@ func TestRunShowsTotalCurrentAndElapsedTime(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Progress: 2/2 verified (100.0%); 0 remaining; elapsed=") {
 		t.Fatalf("resume did not include existing checkpoint:\n%s", out.String())
+	}
+}
+
+func TestRemoteDuplicateIsReusedWithoutUpload(t *testing.T) {
+	o, _ := fixture(t)
+	o.skipRemoteCheck = false
+	h := md5.Sum([]byte("original-photo"))
+	wantHash := hex.EncodeToString(h[:])
+	copyCalls := 0
+	invoke := func(ctx context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "mkdir":
+			return nil, nil
+		case "lsjson":
+			return json.Marshal([]map[string]any{{
+				"Path": "existing/renamed-photo.jpg", "Size": len("original-photo"),
+				"Hashes": map[string]string{"md5": strings.ToUpper(wantHash)},
+			}})
+		case "copyto":
+			copyCalls++
+			return nil, nil
+		default:
+			return nil, errors.New("unexpected command")
+		}
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), o, invoke, &out); err != nil {
+		t.Fatal(err)
+	}
+	if copyCalls != 0 {
+		t.Fatalf("uploaded an existing duplicate %d times", copyCalls)
+	}
+	if !strings.Contains(out.String(), "MATCHED A/a.jpg; existing=gdrive:Archive/existing/renamed-photo.jpg") ||
+		!strings.Contains(out.String(), "Remote matches reused: 1; uploads completed: 0") {
+		t.Fatalf("unexpected output:\n%s", out.String())
+	}
+	b, err := os.ReadFile(filepath.Join(o.work, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s state
+	if err = json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Done["A/a.jpg"].Destination; got != "gdrive:Archive/existing/renamed-photo.jpg" {
+		t.Fatalf("destination=%q", got)
+	}
+}
+
+func TestRemoteNonDuplicateIsUploaded(t *testing.T) {
+	o, _ := fixture(t)
+	o.skipRemoteCheck = false
+	copyCalls := 0
+	var uploaded []byte
+	invoke := func(ctx context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "mkdir":
+			return nil, nil
+		case "copyto":
+			copyCalls++
+			var err error
+			uploaded, err = os.ReadFile(args[1])
+			return nil, err
+		case "lsjson":
+			if args[1] == o.remote {
+				return json.Marshal([]map[string]any{{
+					"Path": "existing/different.jpg", "Size": len("original-photo"),
+					"Hashes": map[string]string{"MD5": "00000000000000000000000000000000"},
+				}})
+			}
+			h := md5.Sum(uploaded)
+			return json.Marshal(map[string]any{
+				"Size": len(uploaded), "Hashes": map[string]string{"MD5": hex.EncodeToString(h[:])},
+			})
+		default:
+			return nil, errors.New("unexpected command")
+		}
+	}
+	var out bytes.Buffer
+	if err := run(context.Background(), o, invoke, &out); err != nil {
+		t.Fatal(err)
+	}
+	if copyCalls != 1 || !strings.Contains(out.String(), "Remote matches reused: 0; uploads completed: 1") {
+		t.Fatalf("copyCalls=%d output:\n%s", copyCalls, out.String())
+	}
+}
+
+func TestPreviewDoesNotContactRemoteByDefault(t *testing.T) {
+	o, _ := fixture(t)
+	o.execute = false
+	o.skipRemoteCheck = false
+	if err := run(context.Background(), o, func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("preview contacted remote")
+		return nil, nil
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
 	}
 }
 

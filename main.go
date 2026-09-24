@@ -45,6 +45,7 @@ type options struct {
 	library, remote, work, rclone, report, photosReport string
 	execute                                             bool
 	status                                              bool
+	skipRemoteCheck                                     bool
 	limit                                               int
 	reserve                                             uint64
 }
@@ -60,6 +61,7 @@ func main() {
 	flag.StringVar(&o.photosReport, "photos-report", "", "write Photos titles and transfer status as CSV")
 	flag.BoolVar(&o.execute, "execute", false, "upload files (default: list only)")
 	flag.BoolVar(&o.status, "status", false, "summarize verified, pending, and changed local files")
+	flag.BoolVar(&o.skipRemoteCheck, "skip-remote-check", false, "skip the recursive duplicate check below --remote")
 	flag.IntVar(&o.limit, "limit", 0, "maximum new files per run; 0 means all")
 	flag.Uint64Var(&o.reserve, "reserve-bytes", 2<<30, "minimum free disk space to preserve")
 	flag.Parse()
@@ -87,6 +89,18 @@ type statusRow struct {
 	MD5         string
 	Destination string
 	VerifiedAt  time.Time
+}
+
+type contentKey struct {
+	Size int64
+	MD5  string
+}
+
+type remoteItem struct {
+	Path   string
+	Size   int64
+	IsDir  bool
+	Hashes map[string]string
 }
 
 func showStatus(o options, out io.Writer) error {
@@ -338,6 +352,15 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			return b, nil
 		}
 	}
+	var remoteFiles map[contentKey]string
+	if !o.skipRemoteCheck {
+		var listed, usable, missingHash int
+		remoteFiles, listed, usable, missingHash, err = scanRemote(ctx, invoke, o.remote)
+		if err != nil {
+			return fmt.Errorf("cannot scan --remote for duplicates: %w", err)
+		}
+		fmt.Fprintf(out, "Remote duplicate index: %d files listed; %d usable size/MD5 records; %d without usable MD5.\n", listed, usable, missingHash)
+	}
 	stage := filepath.Join(work, "staging")
 	if st, e := os.Lstat(stage); e == nil && (!st.IsDir() || st.Mode()&os.ModeSymlink != 0) {
 		return errors.New("staging must be a real directory")
@@ -357,7 +380,7 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			}
 		}
 	}
-	completed, failed := 0, 0
+	completed, failed, matched, uploaded := 0, 0, 0, 0
 	for i, f := range files {
 		if err = ctx.Err(); err != nil {
 			return err
@@ -391,6 +414,21 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			failed++
 			continue
 		}
+		key := contentKey{Size: f.Size, MD5: strings.ToLower(hash)}
+		if existing, ok := remoteFiles[key]; ok {
+			s.Done[f.Path] = record{f.Size, f.Modified, hash, existing, time.Now().UTC()}
+			if e = saveState(statePath, s); e != nil {
+				return e
+			}
+			if e = os.Remove(tmp); e != nil {
+				return e
+			}
+			completed++
+			matched++
+			verified++
+			fmt.Fprintf(out, "[%d/%d] MATCHED %s; existing=%s; verified=%d/%d; remaining=%d; elapsed=%s\n", i+1, len(files), f.Path, existing, verified, len(files), len(files)-verified, elapsed(started))
+			continue
+		}
 		// Content-addressed object names prevent overwriting an older or unrelated version.
 		id := sha256.Sum256([]byte(root))
 		dest := o.remote + "/" + hex.EncodeToString(id[:8]) + "/" + filepath.ToSlash(filepath.Dir(f.Path)) + "/" + hash + "-" + filepath.Base(f.Path)
@@ -414,7 +452,11 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			return e
 		}
 		completed++
+		uploaded++
 		verified++
+		if remoteFiles != nil {
+			remoteFiles[key] = dest
+		}
 		fmt.Fprintf(out, "[%d/%d] VERIFIED %s; verified=%d/%d; remaining=%d; elapsed=%s\n", i+1, len(files), f.Path, verified, len(files), len(files)-verified, elapsed(started))
 	}
 	verifiedNow := 0
@@ -425,10 +467,49 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Checkpoint: %d/%d currently eligible files verified unchanged; %d remaining.\n", verifiedNow, len(files), len(files)-verifiedNow)
 	fmt.Fprintf(out, "Complete: %d newly verified; %d skipped/failed; elapsed=%s. Photos originals were not modified.\n", completed, failed, elapsed(started))
+	if !o.skipRemoteCheck {
+		fmt.Fprintf(out, "Remote matches reused: %d; uploads completed: %d.\n", matched, uploaded)
+	}
 	if failed > 0 {
 		return errors.New("some files were not transferred; see SKIP messages and rerun to retry")
 	}
 	return nil
+}
+
+func scanRemote(ctx context.Context, invoke runner, remote string) (map[contentKey]string, int, int, int, error) {
+	if _, err := invoke(ctx, "mkdir", remote); err != nil {
+		return nil, 0, 0, 0, err
+	}
+	b, err := invoke(ctx, "lsjson", remote, "--recursive", "--files-only", "--hash-type", "MD5", "--no-modtime", "--no-mimetype")
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	var items []remoteItem
+	if err = json.Unmarshal(b, &items); err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("invalid rclone lsjson response: %w", err)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	index := make(map[contentKey]string, len(items))
+	usable, missingHash := 0, 0
+	for _, item := range items {
+		md5sum := ""
+		for name, value := range item.Hashes {
+			if strings.EqualFold(name, "MD5") {
+				md5sum = strings.ToLower(strings.TrimSpace(value))
+				break
+			}
+		}
+		if item.IsDir || item.Size < 0 || item.Path == "" || md5sum == "" {
+			missingHash++
+			continue
+		}
+		usable++
+		key := contentKey{Size: item.Size, MD5: md5sum}
+		if _, exists := index[key]; !exists {
+			index[key] = strings.TrimRight(remote, "/") + "/" + strings.TrimLeft(item.Path, "/")
+		}
+	}
+	return index, len(items), usable, missingHash, nil
 }
 
 func printProgress(out io.Writer, verified, total int, started time.Time) {
