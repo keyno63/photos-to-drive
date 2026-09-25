@@ -140,6 +140,19 @@ go run . \
 
 The command groups files with the same size and MD5, then prints every Drive path, the number of duplicate groups, and the reclaimable size if one file per group is kept. It is read-only and never deletes duplicates automatically.
 
+## Flatten the previous local folder layout
+
+The macOS script below moves files from the previous `library-identifier/0-F/` layout to the root of local Google Drive sync folders. Review the dry run before executing it.
+
+```sh
+./scripts/migrate-pictures-tool.sh "/path/to/synced-folder"
+./scripts/migrate-pictures-tool.sh --execute "/path/to/synced-folder"
+```
+
+Pass one or more target directories as positional arguments. Multiple directories are processed independently. Existing filenames are never overwritten; collisions receive a `__flat_N` suffix. Wait for the Google Drive app to finish syncing afterward. Existing `state.json` entries retain the old Drive paths, so after sync completes, run the normal transfer with a new `--work` directory to rebuild the checkpoint with flat paths through the default remote duplicate check.
+
+Because the whole path is double-quoted, do not add backslashes before spaces or underscores inside the quotes. For example, use `"$HOME/Google Drive/My Drive/target-folder"`.
+
 ```sh
 go run . \
   --library "$HOME/Pictures/Photos Library.photoslibrary" \
