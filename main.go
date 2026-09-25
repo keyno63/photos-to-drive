@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"crypto/md5"
-	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -487,9 +486,9 @@ func run(ctx context.Context, o options, invoke runner, out io.Writer) error {
 			fmt.Fprintf(out, "[%d/%d] MATCHED %s; existing=%s; verified=%d/%d; remaining=%d; elapsed=%s\n", i+1, len(files), f.Path, existing, verified, len(files), len(files)-verified, elapsed(started))
 			continue
 		}
-		// Content-addressed object names prevent overwriting an older or unrelated version.
-		id := sha256.Sum256([]byte(root))
-		dest := o.remote + "/" + hex.EncodeToString(id[:8]) + "/" + filepath.ToSlash(filepath.Dir(f.Path)) + "/" + hash + "-" + filepath.Base(f.Path)
+		// Content-addressed names keep the destination flat while preventing collisions
+		// between unrelated Photos-library filenames.
+		dest := o.remote + "/" + hash + "-" + filepath.Base(f.Path)
 		fmt.Fprintf(out, "[%d/%d] UPLOAD %s (%d bytes); verified=%d/%d; elapsed=%s\n", i+1, len(files), f.Path, f.Size, verified, len(files), elapsed(started))
 		_, e = invoke(ctx, "copyto", tmp, dest, "--checksum", "--immutable", "--retries", "3", "--low-level-retries", "3", "--transfers", "1", "--checkers", "1")
 		if e == nil {

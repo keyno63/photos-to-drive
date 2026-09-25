@@ -223,6 +223,27 @@ func TestRemoteNonDuplicateIsUploaded(t *testing.T) {
 	}
 }
 
+func TestUploadDestinationIsFlat(t *testing.T) {
+	o, _ := fixture(t)
+	n := 0
+	base := backend(t, false, &n)
+	destination := ""
+	invoke := func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "copyto" {
+			destination = args[2]
+		}
+		return base(ctx, args...)
+	}
+	if err := run(context.Background(), o, invoke, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	h := md5.Sum([]byte("original-photo"))
+	want := "gdrive:Archive/" + hex.EncodeToString(h[:]) + "-a.jpg"
+	if destination != want {
+		t.Fatalf("destination=%q, want flat destination %q", destination, want)
+	}
+}
+
 func TestPreviewDoesNotContactRemoteByDefault(t *testing.T) {
 	o, _ := fixture(t)
 	o.execute = false
