@@ -2,3 +2,5 @@
 /.photos-to-drive/
 
 .idea/
+client_secret*.json
+google-token*.json
