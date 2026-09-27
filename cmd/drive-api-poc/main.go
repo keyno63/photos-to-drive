@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -24,6 +26,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -31,6 +34,15 @@ type options struct {
 	credentials string
 	token       string
 	folderID    string
+	uploads     stringList
+}
+
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
 
 type remoteFile struct {
@@ -49,11 +61,21 @@ type duplicateGroup struct {
 	Paths []string
 }
 
+type preparedUpload struct {
+	File     *os.File
+	Path     string
+	Name     string
+	Size     int64
+	Modified time.Time
+	MD5      string
+}
+
 func main() {
 	var o options
 	flag.StringVar(&o.credentials, "credentials", "", "OAuth Desktop app client-secret JSON file")
 	flag.StringVar(&o.token, "token", "", "OAuth token file (default: user config directory)")
 	flag.StringVar(&o.folderID, "folder-id", "", "Google Drive folder ID to scan recursively")
+	flag.Var(&o.uploads, "upload", "local file to upload; may be specified multiple times")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,7 +114,136 @@ func run(ctx context.Context, o options, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	printDuplicates(out, "drive-folder:"+o.folderID, files)
+	if len(o.uploads) == 0 {
+		printDuplicates(out, "drive-folder:"+o.folderID, files)
+		return nil
+	}
+	if err = uploadFiles(ctx, service, o.folderID, o.uploads, files, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+func uploadFiles(ctx context.Context, service *drive.Service, folderID string, paths []string, remoteFiles []remoteFile, out io.Writer) error {
+	index := make(map[contentKey]string, len(remoteFiles))
+	for _, file := range remoteFiles {
+		if file.MD5 == "" || file.Size < 0 {
+			continue
+		}
+		key := contentKey{Size: file.Size, MD5: strings.ToLower(file.MD5)}
+		if _, exists := index[key]; !exists {
+			index[key] = file.Path
+		}
+	}
+
+	started := time.Now()
+	uploaded, matched := 0, 0
+	for i, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		prepared, err := prepareUpload(path)
+		if err != nil {
+			return fmt.Errorf("prepare upload %s: %w", path, err)
+		}
+		key := contentKey{Size: prepared.Size, MD5: prepared.MD5}
+		if existing, ok := index[key]; ok {
+			prepared.File.Close()
+			matched++
+			fmt.Fprintf(out, "[%d/%d] MATCHED %s; existing=%s; elapsed=%s\n", i+1, len(paths), prepared.Path, existing, time.Since(started).Truncate(time.Second))
+			continue
+		}
+
+		fmt.Fprintf(out, "[%d/%d] UPLOAD %s as %s (%s)\n", i+1, len(paths), prepared.Path, prepared.Name, formatBytes(uint64(prepared.Size)))
+		created, err := service.Files.Create(&drive.File{
+			Name:    prepared.Name,
+			Parents: []string{folderID},
+		}).
+			Media(prepared.File, googleapi.ChunkSize(8<<20)).
+			ProgressUpdater(func(current, total int64) {
+				percent := 100.0
+				if total > 0 {
+					percent = float64(current) * 100 / float64(total)
+				}
+				fmt.Fprintf(out, "[%d/%d] UPLOADING %.1f%% (%s/%s); elapsed=%s\n", i+1, len(paths), percent, formatBytes(uint64(current)), formatBytes(uint64(total)), time.Since(started).Truncate(time.Second))
+			}).
+			Fields("id,name,size,md5Checksum,parents").
+			SupportsAllDrives(true).
+			Context(ctx).
+			Do()
+		closeErr := prepared.File.Close()
+		if err != nil {
+			return fmt.Errorf("upload %s: %w", prepared.Path, err)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if err = sourceUnchanged(prepared); err != nil {
+			return fmt.Errorf("uploaded Drive file ID %s but source validation failed: %w", created.Id, err)
+		}
+		verified, err := service.Files.Get(created.Id).
+			Fields("id,name,size,md5Checksum,parents").
+			SupportsAllDrives(true).
+			Context(ctx).
+			Do()
+		if err != nil {
+			return fmt.Errorf("verify uploaded Drive file ID %s: %w", created.Id, err)
+		}
+		if verified.Size != prepared.Size || !strings.EqualFold(verified.Md5Checksum, prepared.MD5) {
+			return fmt.Errorf("uploaded Drive file ID %s failed size/MD5 verification", created.Id)
+		}
+		uploaded++
+		index[key] = verified.Name
+		fmt.Fprintf(out, "[%d/%d] VERIFIED id=%s name=%s MD5=%s; elapsed=%s\n", i+1, len(paths), verified.Id, verified.Name, verified.Md5Checksum, time.Since(started).Truncate(time.Second))
+	}
+	fmt.Fprintf(out, "Complete: %d uploaded and verified; %d existing matches reused; elapsed=%s. Local files were not modified.\n", uploaded, matched, time.Since(started).Truncate(time.Second))
+	return nil
+}
+
+func prepareUpload(path string) (*preparedUpload, error) {
+	abs, err := filepath.Abs(expandHome(path))
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("source must be a regular non-symlink file")
+	}
+	file, err := os.Open(abs)
+	if err != nil {
+		return nil, err
+	}
+	h := md5.New()
+	if _, err = io.Copy(h, file); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		file.Close()
+		return nil, err
+	}
+	hash := hex.EncodeToString(h.Sum(nil))
+	return &preparedUpload{
+		File:     file,
+		Path:     abs,
+		Name:     hash + "-" + filepath.Base(abs),
+		Size:     info.Size(),
+		Modified: info.ModTime(),
+		MD5:      hash,
+	}, nil
+}
+
+func sourceUnchanged(prepared *preparedUpload) error {
+	info, err := os.Stat(prepared.Path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != prepared.Size || !info.ModTime().Equal(prepared.Modified) {
+		return errors.New("local source changed during upload")
+	}
 	return nil
 }
 

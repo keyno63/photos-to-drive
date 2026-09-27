@@ -138,6 +138,34 @@ go run . \
 
 サイズとMD5が一致するファイルをグループ化し、すべてのDriveパス、重複グループ数、1ファイルずつ残した場合に削減できる容量を表示します。たとえば`photo_store/0/hoge1.png`と`photo_store/2/hoge5.png`が同一内容なら、同じグループに表示されます。この機能は読み取り専用で、重複ファイルを自動削除しません。
 
+### rcloneを使わないDrive API試作版
+
+`cmd/drive-api-poc`は、Google Drive APIへ直接接続する試作です。rcloneを呼び出さず、ブラウザOAuth認証、トークン保存、指定フォルダ以下の再帰一覧、サイズとMD5による重複表示、ローカルファイルのアップロードまで実装しています。
+
+Google Cloud Consoleで種類が「デスクトップアプリ」のOAuthクライアントJSONをダウンロードし、同意画面に`drive.file`と`drive.metadata.readonly`を追加してください。DriveフォルダIDは、ブラウザでフォルダを開いたURLの`/folders/`以降です。
+
+```sh
+go run ./cmd/drive-api-poc \
+  --credentials "$HOME/Downloads/client_secret.json" \
+  --folder-id "Google DriveフォルダID"
+```
+
+`--upload`を指定しなければ、Driveを変更せず重複一覧だけを表示します。ファイルをアップロードする場合は、`--upload`を1回以上指定します。
+
+```sh
+go run ./cmd/drive-api-poc \
+  --credentials "$HOME/Downloads/client_secret.json" \
+  --folder-id "Google DriveフォルダID" \
+  --upload "$HOME/Pictures/example.heic" \
+  --upload "$HOME/Movies/example.mov"
+```
+
+アップロード前に対象フォルダ以下を走査し、サイズとMD5が同じファイルがあれば再送信を省略します。未存在のファイルは`MD5-元ファイル名`として指定フォルダ直下へ8MiBチャンクでアップロードし、完了後にDrive側のサイズとMD5を再取得して検証します。ローカルファイルは変更しません。
+
+初回はブラウザが開きます。トークンはデフォルトでmacOSのユーザー設定ディレクトリ内に`photos-to-drive/google-token.json`として権限`0600`で保存します。`--token /path/to/token.json`でも変更できます。OAuthクライアントJSONとトークンはリポジトリへ追加しないでください。
+
+この試作には、プロセス終了をまたぐアップロードセッションの再開、API制限時の独自バックオフ、既存CLIの`state.json`との統合はまだありません。`--upload`を指定しない限りDriveを変更しません。OAuthスコープを変更した場合は、保存済みトークンを別名へ退避して再認証してください。
+
 ## 以前の階層をローカルでフラット化
 
 Google Driveの同期フォルダに残っている以前の`ライブラリ識別子/0〜F/`構成は、macOS用スクリプトでルート直下へ移動できます。最初は変更しないドライランで確認してください。

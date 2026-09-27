@@ -140,6 +140,34 @@ go run . \
 
 The command groups files with the same size and MD5, then prints every Drive path, the number of duplicate groups, and the reclaimable size if one file per group is kept. It is read-only and never deletes duplicates automatically.
 
+### Direct Drive API proof of concept without rclone
+
+`cmd/drive-api-poc` connects directly to Google Drive API without invoking rclone. Browser OAuth, secure token storage, recursive folder listing, size-plus-MD5 duplicate reporting, and local-file uploads are implemented.
+
+In Google Cloud Console, download the OAuth client JSON for a Desktop app and add `drive.file` and `drive.metadata.readonly` to the consent screen. The Drive folder ID is the part after `/folders/` in the folder's browser URL.
+
+```sh
+go run ./cmd/drive-api-poc \
+  --credentials "$HOME/Downloads/client_secret.json" \
+  --folder-id "Google Drive folder ID"
+```
+
+Without `--upload`, it only reports duplicates and does not change Drive. Repeat `--upload` to upload one or more files:
+
+```sh
+go run ./cmd/drive-api-poc \
+  --credentials "$HOME/Downloads/client_secret.json" \
+  --folder-id "Google Drive folder ID" \
+  --upload "$HOME/Pictures/example.heic" \
+  --upload "$HOME/Movies/example.mov"
+```
+
+Before uploading, the command scans the folder tree and reuses an existing object with the same size and MD5. New objects are uploaded to the selected folder root in 8 MiB chunks as `MD5-original-filename`, then verified by reading their Drive size and MD5. Local files are not modified.
+
+The browser opens on first use. By default, the token is stored with mode `0600` as `photos-to-drive/google-token.json` below the macOS user config directory. Override it with `--token /path/to/token.json`. Never commit the OAuth client JSON or token.
+
+Persistence of resumable-upload sessions across process restarts, custom API rate-limit backoff, and integration with the main CLI checkpoint are not implemented yet. The command does not modify Drive unless `--upload` is supplied. If the OAuth scopes change, move the saved token aside and authenticate again.
+
 ## Flatten the previous local folder layout
 
 The macOS script below moves files from the previous `library-identifier/0-F/` layout to the root of local Google Drive sync folders. Review the dry run before executing it.
