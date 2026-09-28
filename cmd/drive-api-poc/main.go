@@ -1,5 +1,5 @@
-// drive-api-poc is a read-only proof of concept for accessing Google Drive
-// directly, without rclone. Upload support is intentionally not implemented yet.
+// drive-api-poc accesses Google Drive directly without rclone. Uploads require
+// both --upload and --execute; otherwise upload requests are previewed only.
 package main
 
 import (
@@ -35,6 +35,7 @@ type options struct {
 	token       string
 	folderID    string
 	uploads     stringList
+	execute     bool
 }
 
 type stringList []string
@@ -76,6 +77,7 @@ func main() {
 	flag.StringVar(&o.token, "token", "", "OAuth token file (default: user config directory)")
 	flag.StringVar(&o.folderID, "folder-id", "", "Google Drive folder ID to scan recursively")
 	flag.Var(&o.uploads, "upload", "local file to upload; may be specified multiple times")
+	flag.BoolVar(&o.execute, "execute", false, "perform uploads requested by --upload (default: preview only)")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,13 +120,13 @@ func run(ctx context.Context, o options, out io.Writer) error {
 		printDuplicates(out, "drive-folder:"+o.folderID, files)
 		return nil
 	}
-	if err = uploadFiles(ctx, service, o.folderID, o.uploads, files, out); err != nil {
+	if err = uploadFiles(ctx, service, o.folderID, o.uploads, files, o.execute, out); err != nil {
 		return err
 	}
 	return nil
 }
 
-func uploadFiles(ctx context.Context, service *drive.Service, folderID string, paths []string, remoteFiles []remoteFile, out io.Writer) error {
+func uploadFiles(ctx context.Context, service *drive.Service, folderID string, paths []string, remoteFiles []remoteFile, execute bool, out io.Writer) error {
 	index := make(map[contentKey]string, len(remoteFiles))
 	for _, file := range remoteFiles {
 		if file.MD5 == "" || file.Size < 0 {
@@ -137,7 +139,7 @@ func uploadFiles(ctx context.Context, service *drive.Service, folderID string, p
 	}
 
 	started := time.Now()
-	uploaded, matched := 0, 0
+	uploaded, matched, planned := 0, 0, 0
 	for i, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -151,6 +153,13 @@ func uploadFiles(ctx context.Context, service *drive.Service, folderID string, p
 			prepared.File.Close()
 			matched++
 			fmt.Fprintf(out, "[%d/%d] MATCHED %s; existing=%s; elapsed=%s\n", i+1, len(paths), prepared.Path, existing, time.Since(started).Truncate(time.Second))
+			continue
+		}
+		if !execute {
+			prepared.File.Close()
+			planned++
+			index[key] = "planned:" + prepared.Name
+			fmt.Fprintf(out, "[%d/%d] WOULD UPLOAD %s as %s (%s); elapsed=%s\n", i+1, len(paths), prepared.Path, prepared.Name, formatBytes(uint64(prepared.Size)), time.Since(started).Truncate(time.Second))
 			continue
 		}
 
@@ -195,6 +204,10 @@ func uploadFiles(ctx context.Context, service *drive.Service, folderID string, p
 		uploaded++
 		index[key] = verified.Name
 		fmt.Fprintf(out, "[%d/%d] VERIFIED id=%s name=%s MD5=%s; elapsed=%s\n", i+1, len(paths), verified.Id, verified.Name, verified.Md5Checksum, time.Since(started).Truncate(time.Second))
+	}
+	if !execute {
+		fmt.Fprintf(out, "Dry run: %d would upload; %d existing or planned matches reused; elapsed=%s. Re-run with --execute to upload.\n", planned, matched, time.Since(started).Truncate(time.Second))
+		return nil
 	}
 	fmt.Fprintf(out, "Complete: %d uploaded and verified; %d existing matches reused; elapsed=%s. Local files were not modified.\n", uploaded, matched, time.Since(started).Truncate(time.Second))
 	return nil

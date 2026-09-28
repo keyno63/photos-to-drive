@@ -162,11 +162,13 @@ go run ./cmd/drive-api-poc \
   --upload "$HOME/Movies/example.mov"
 ```
 
+This is a dry run that only prints `WOULD UPLOAD` and `MATCHED`. Add `--execute` to the same command only after reviewing the plan.
+
 Before uploading, the command scans the folder tree and reuses an existing object with the same size and MD5. New objects are uploaded to the selected folder root in 8 MiB chunks as `MD5-original-filename`, then verified by reading their Drive size and MD5. Local files are not modified.
 
 The browser opens on first use. By default, the token is stored with mode `0600` as `photos-to-drive/google-token.json` below the macOS user config directory. Override it with `--token /path/to/token.json`. Never commit the OAuth client JSON or token.
 
-Persistence of resumable-upload sessions across process restarts, custom API rate-limit backoff, and integration with the main CLI checkpoint are not implemented yet. The command does not modify Drive unless `--upload` is supplied. If the OAuth scopes change, move the saved token aside and authenticate again.
+Persistence of resumable-upload sessions across process restarts, custom API rate-limit backoff, and integration with the main CLI checkpoint are not implemented yet. The command does not modify Drive unless both `--upload` and `--execute` are supplied. If the OAuth scopes change, move the saved token aside and authenticate again.
 
 ## Flatten the previous local folder layout
 

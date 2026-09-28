@@ -72,6 +72,21 @@ func TestPrepareUploadRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestUploadDryRunDoesNotContactDrive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(path, []byte("photo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := uploadFiles(t.Context(), nil, "folder", []string{path, path}, nil, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Count(text, "WOULD UPLOAD") != 1 || strings.Count(text, "MATCHED") != 1 || !strings.Contains(text, "Dry run: 1 would upload") {
+		t.Fatalf("output=%s", text)
+	}
+}
+
 func TestExpandHomeLeavesOrdinaryPath(t *testing.T) {
 	if got := expandHome("/tmp/client.json"); got != "/tmp/client.json" {
 		t.Fatal(got)
