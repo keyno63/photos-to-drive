@@ -259,3 +259,7 @@ go vet ./...
 ```
 
 Tests use a local mock Photos library and transfer backend. They cover resume after success, verification failure, preservation of originals, free-space limits, destination mismatch, and cancellation. They do not access a real Google account.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). You may use, modify, and distribute this software under its terms. See `LICENSE` for the full text.
