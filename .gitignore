@@ -4,3 +4,6 @@
 .idea/
 client_secret*.json
 google-token*.json
+
+*.pem
+*.key
